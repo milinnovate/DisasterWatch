@@ -26,7 +26,7 @@ def get_disaster_data_from_idea():
         "engine": "google",
         "gl": "us",
         "hl": "en",
-        "domain": [ "ndtv.com", "bbc.in"], # not sure if this is working
+        "domain": [ "ndtv.com", "bbc.in", "thehindu.com"], # not sure if this is working
     }
     search = SerpAPIWrapper(params=params)
     tool = Tool(
@@ -56,14 +56,16 @@ def get_disaster_data_from_idea():
             app.logger.info(f" Location not found or geocoding error: {location}")
             app.logger.info(f" Error: {e}")
 
-     # Generate commentary for each location one by one
+    # Generate commentary for each location one by one
+    commentary = []
     for location_data in locations_data:
         location = location_data['location']
         prompt = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source (link) of the news"
         response = agent.run(prompt)
-        location_data['commentary'] = response
+        commentary.append(response)
 
-    return jsonify(locations_data)
+    # return location and commentary
+    return jsonify({'locations_data': locations_data, 'commentary': commentary})
 
 if __name__ == '__main__':
     app.run(debug=True, port= 3001)
