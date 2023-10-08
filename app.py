@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify, render_template
 from langchain.llms import OpenAI
 from langchain.agents import load_tools, initialize_agent, Tool
 from langchain.utilities import SerpAPIWrapper
-import json
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.prompts import PromptTemplate, ChatPromptTemplate, HumanMessagePromptTemplate
 from geopy.geocoders import Nominatim
 import os 
 from dotenv import load_dotenv  
@@ -56,16 +57,42 @@ def get_disaster_data_from_idea():
             app.logger.info(f" Location not found or geocoding error: {location}")
             app.logger.info(f" Error: {e}")
 
+    response_schemas = [
+        ResponseSchema(name="commentary", description="news about the disaster"),
+        ResponseSchema(name="date", description="date of the disaster"),
+        ResponseSchema(name="source", description="source used to answer the user's question, should be a website.")
+    ]
+    output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+    format_instructions = output_parser.get_format_instructions()
+
+    question = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source (link) of the news"
+    prompt = ChatPromptTemplate(
+    messages=[
+        HumanMessagePromptTemplate.from_template("Answer the user's question as best as possible.\n{format_instructions}\n{question}")  
+    ],
+    input_variables=["question"],
+    partial_variables={"format_instructions": format_instructions}
+    )
+
+    input = prompt.format_prompt(question=question)
+
+    # date, location, event, source
+
     # Generate commentary for each location one by one
     commentary = []
+    dates = []
+    sources = []
     for location_data in locations_data:
         location = location_data['location']
-        prompt = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source (link) of the news"
-        response = agent.run(prompt)
-        commentary.append(response)
+        prompt = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source of the news"
+        response = agent.run(input)
+        commentary.append(response['answer'])
+        dates.append(response['date'])
+        sources.append(response['source'])
+        
 
     # return location and commentary
-    return jsonify({'locations_data': locations_data, 'commentary': commentary})
+    return jsonify({'dates': dates, 'locations': locations, 'commentary': commentary, 'sources': sources})
 
 if __name__ == '__main__':
     app.run(debug=True, port= 3001)
