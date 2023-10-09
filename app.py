@@ -1,14 +1,14 @@
 from flask import Flask, request, jsonify, render_template
-import openai
-import json
+from langchain.llms import OpenAI
+from langchain.agents import load_tools, initialize_agent, Tool
+from langchain.utilities import SerpAPIWrapper
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.prompts import PromptTemplate, ChatPromptTemplate, HumanMessagePromptTemplate
 from geopy.geocoders import Nominatim
 import os 
 from dotenv import load_dotenv  
 
 app = Flask(__name__)
-
-openai.api_key = os.environ.get('OPEN_AI_KEY')
-
 
 load_dotenv()
 
@@ -22,15 +22,26 @@ def get_disaster_data_from_idea():
     data = request.get_json()
     disasterIdea = data.get('idea')
 
-    prompt = f"Given the Disaster '{disasterIdea}', list relevant affected areas of disaster (like specific landmarks, attractions, or sites) separated by semicolons."
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=100,
-        temperature=0.2,
+    llm = OpenAI(temperature=0.9, openai_api_key=os.environ.get('OPEN_AI_KEY'))
+    params = {
+        "engine": "google",
+        "gl": "us",
+        "hl": "en",
+        "domain": [ "ndtv.com", "bbc.in", "thehindu.com"], # not sure if this is working
+    }
+    search = SerpAPIWrapper(params=params)
+    tool = Tool(
+        name="search_tool",
+        description="To search for relevant information about the disaster",
+        func=search.run,
     )
-    generated_text = response.choices[0].text.strip()
-    locations = [place.strip() for place in generated_text.split(';')]
+    agent = initialize_agent([tool], llm, agent="zero-shot-react-description", verbose=True)
+
+    prompt = f"The user is interested in finding locations affected by disasters. Given the prompt {disasterIdea}, find the relevant affected areas of disaster (like specific landmarks, attractions, or sites) separated by commas."
+    response = agent.run(prompt)
+
+    locations = [place.strip() for place in response.split(',')]
+    print(locations)
 
     geolocator = Nominatim(user_agent="your_app_name")
     locations_data = []
@@ -43,20 +54,45 @@ def get_disaster_data_from_idea():
                 'longitude': geo_location.longitude,
             })
         except Exception as e:
-            app.logger.info(f"Location not found or geocoding error: {location}")
-            app.logger.info(f"Error: {e}")
+            app.logger.info(f" Location not found or geocoding error: {location}")
+            app.logger.info(f" Error: {e}")
 
-    # Generate commentary for all locations
-    prompt = f"You've mentioned that you're interested in '{disasterIdea}'. The relevant points of interest are {json.dumps(locations_data, default=str)}. Here is the latest news about the disasters along with the date and the location of the disaster:"
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=1000,
-        temperature=0.2,
+    response_schemas = [
+        ResponseSchema(name="commentary", description="news about the disaster"),
+        ResponseSchema(name="date", description="date of the disaster"),
+        ResponseSchema(name="source", description="source used to answer the user's question, should be a website.")
+    ]
+    output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+    format_instructions = output_parser.get_format_instructions()
+
+    question = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source (link) of the news"
+    prompt = ChatPromptTemplate(
+    messages=[
+        HumanMessagePromptTemplate.from_template("Answer the user's question as best as possible.\n{format_instructions}\n{question}")  
+    ],
+    input_variables=["question"],
+    partial_variables={"format_instructions": format_instructions}
     )
-    commentary = response.choices[0].text.strip()
 
-    return jsonify({'locations_data': locations_data, 'commentary': commentary})
+    input = prompt.format_prompt(question=question)
+
+    # date, location, event, source
+
+    # Generate commentary for each location one by one
+    commentary = []
+    dates = []
+    sources = []
+    for location_data in locations_data:
+        location = location_data['location']
+        prompt = f"The user is interested in finding disaster commentary for the location {location}. Find the latest news about the disasters along with the date and the location of the disaster, along with the source of the news"
+        response = agent.run(input)
+        commentary.append(response['answer'])
+        dates.append(response['date'])
+        sources.append(response['source'])
+        
+
+    # return location and commentary
+    return jsonify({'dates': dates, 'locations': locations, 'commentary': commentary, 'sources': sources})
 
 if __name__ == '__main__':
     app.run(debug=True, port= 3001)
